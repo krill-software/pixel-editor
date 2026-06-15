@@ -53,11 +53,25 @@ body {
   background: var(--fm-bg);
 }
 
+/* The grid canvas and the cursor-overlay canvas share this frame so the
+ * overlay can sit pixel-aligned on top of the grid. */
+.pe-frame {
+  position: relative;
+  line-height: 0;
+}
 .pe-canvas {
+  display: block;
   image-rendering: pixelated;
   box-shadow: 0 8px 28px rgba(48, 52, 63, 0.16);
   cursor: crosshair;
   /* The checkerboard + grid are painted into the canvas itself. */
+}
+.pe-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  image-rendering: pixelated;
 }
 
 /* Tool / color rail ================================================= */

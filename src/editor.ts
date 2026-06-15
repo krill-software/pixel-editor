@@ -47,15 +47,25 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
   const undoStack: Uint8ClampedArray<ArrayBuffer>[] = [];
   const redoStack: Uint8ClampedArray<ArrayBuffer>[] = [];
 
-  // The display canvas (scaled view) and a native-resolution scratch canvas
-  // (one cell = one pixel) used to blit the buffer and to encode/decode PNG.
+  // The display canvas (scaled view), a cursor-overlay canvas drawn on top
+  // (the brush preview — the hovered cell shows the color that will land), and
+  // a native-resolution scratch canvas (one cell = one pixel) used to blit the
+  // buffer and to encode/decode PNG.
+  const frame = document.createElement("div");
+  frame.className = "pe-frame";
   const canvas = document.createElement("canvas");
   canvas.className = "pe-canvas";
-  host.appendChild(canvas);
+  const cursor = document.createElement("canvas");
+  cursor.className = "pe-cursor";
+  frame.append(canvas, cursor);
+  host.appendChild(frame);
   const ctx = canvas.getContext("2d")!;
+  const cctx = cursor.getContext("2d")!;
 
   const scratch = document.createElement("canvas");
   const sctx = scratch.getContext("2d", { willReadFrequently: true })!;
+
+  let lastHover: { x: number; y: number } | null = null;
 
   // ---- buffer access ---------------------------------------------------
 
@@ -94,17 +104,41 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     scale = Number.isFinite(next) && next > 0 ? next : 1;
     resizeCanvas();
     render();
+    renderCursor();
   }
 
   function resizeCanvas(): void {
     const dpr = window.devicePixelRatio || 1;
     const cssW = width * scale;
     const cssH = height * scale;
-    canvas.style.width = `${cssW}px`;
-    canvas.style.height = `${cssH}px`;
-    canvas.width = Math.round(cssW * dpr);
-    canvas.height = Math.round(cssH * dpr);
+    for (const cv of [canvas, cursor]) {
+      cv.style.width = `${cssW}px`;
+      cv.style.height = `${cssH}px`;
+      cv.width = Math.round(cssW * dpr);
+      cv.height = Math.round(cssH * dpr);
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // The brush preview: a box at the hovered cell. Paint fills it with the
+  // current color (so you see exactly what lands); every tool gets a
+  // Shimmering-Blush outline — the krill cursor color.
+  function renderCursor(): void {
+    const cssW = width * scale;
+    const cssH = height * scale;
+    cctx.clearRect(0, 0, cssW, cssH);
+    if (!lastHover || scale < 3) return;
+    const s = scale;
+    const px = lastHover.x * s;
+    const py = lastHover.y * s;
+    if (tool === "paint") {
+      cctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255})`;
+      cctx.fillRect(px, py, s, s);
+    }
+    cctx.lineWidth = 2;
+    cctx.strokeStyle = "#dd7596";
+    cctx.strokeRect(px + 1, py + 1, s - 2, s - 2);
   }
 
   function render(): void {
@@ -208,6 +242,7 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
 
   canvas.addEventListener("pointermove", (e) => {
     const cell = cellAt(e);
+    lastHover = cell;
     opts.onHover?.(cell);
     if (strokeBefore && cell) {
       if (lastCell) applyLine(lastCell, cell);
@@ -215,6 +250,7 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
       lastCell = cell;
       render();
     }
+    renderCursor();
   });
 
   function endStroke(): void {
@@ -232,7 +268,11 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
 
   canvas.addEventListener("pointerup", endStroke);
   canvas.addEventListener("pointercancel", endStroke);
-  canvas.addEventListener("pointerleave", () => opts.onHover?.(null));
+  canvas.addEventListener("pointerleave", () => {
+    lastHover = null;
+    renderCursor();
+    opts.onHover?.(null);
+  });
 
   // ---- public API ------------------------------------------------------
 
@@ -247,12 +287,13 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
       pixels = px ? px.slice() : new Uint8ClampedArray(w * h * 4); // all transparent
       undoStack.length = 0;
       redoStack.length = 0;
+      lastHover = null;
       opts.onHistory?.();
       fit();
     },
 
-    setTool(t) { tool = t; },
-    setColor(c) { color = { ...c }; },
+    setTool(t) { tool = t; renderCursor(); },
+    setColor(c) { color = { ...c }; renderCursor(); },
 
     undo() {
       const prev = undoStack.pop();

@@ -93,6 +93,10 @@ carries its own top strip with the window controls.
   one snapshot on the stack.
 - Current color is a single RGBA value; the recent-colors strip remembers the
   last several distinct colors used (cross-document, persisted).
+- **Cursor preview.** The hovered cell shows a box of the current color (an
+  accent outline always; Paint fills it) so you see exactly what will land.
+- **Wheel = palette.** Scrolling over the canvas cycles the current color
+  through the saved palette — fast access without reaching for the rail.
 
 ## File handling — the `.png` is the document
 

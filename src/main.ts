@@ -91,6 +91,25 @@ function setColor(c: RGBA, fromPick = false): void {
   hexLabel.textContent = hex;
   colorInput.value = hex;
   if (fromPick) rememberColor(hex);
+  else refreshRecentActive();
+}
+
+// Cycle the current color through the saved palette — wheel over the canvas.
+function cycleColor(dir: number): void {
+  if (recentColors.length < 2) return;
+  const cur = rgbaToHex(currentColor);
+  let i = recentColors.indexOf(cur);
+  i = i === -1 ? 0 : (i + dir + recentColors.length) % recentColors.length;
+  const c = hexToRgba(recentColors[i]);
+  if (c) setColor(c);
+}
+
+function refreshRecentActive(): void {
+  if (!recentEl) return;
+  const cur = rgbaToHex(currentColor);
+  for (const child of Array.from(recentEl.children)) {
+    (child as HTMLElement).dataset.active = String((child as HTMLElement).title === cur);
+  }
 }
 
 function rememberColor(hex: string): void {
@@ -327,6 +346,15 @@ function initChrome(version: string): void {
     onHover: (cell) => updateState(cell),
     onHistory: updateTitle,
   });
+
+  // Wheel over the canvas cycles the current color through the saved palette —
+  // fast access without reaching for the rail. (The grid fits the window, so
+  // there's no scroll to hijack.)
+  editor.canvas.addEventListener("wheel", (e) => {
+    if (recentColors.length < 2) return;
+    e.preventDefault();
+    cycleColor(e.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
 
   // Readout in the main topbar (app layout has no status line).
   readoutEl = document.createElement("div");
