@@ -1,7 +1,7 @@
 import "@krill-software/desktop-ui/styles";
 import "./styles.css";
 
-import { mountChrome, showBootError } from "@krill-software/desktop-ui";
+import { mountChrome, parseGpl, showBootError } from "@krill-software/desktop-ui";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -189,6 +189,36 @@ async function openViaDialog(): Promise<void> {
   if (typeof selected === "string") await openPath(selected);
 }
 
+// Load a .gpl palette (the shared krill palette format, also written by
+// color-editor) into the recent-colors strip. Rust read_text couriers the
+// file; the shared desktop-ui parser does the rest.
+async function openPalette(): Promise<void> {
+  const selected = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "GIMP Palette", extensions: ["gpl"] }],
+  });
+  if (typeof selected !== "string") return;
+  let text: string;
+  try {
+    text = await invoke<string>("read_text", { path: selected });
+  } catch (e) {
+    console.error("open palette failed:", e);
+    return;
+  }
+  const hexes: string[] = [];
+  for (const c of parseGpl(text).colors) {
+    const norm = c.hex.toLowerCase();
+    if (!hexes.includes(norm)) hexes.push(norm);
+  }
+  if (hexes.length === 0) return;
+  recentColors = hexes.slice(0, RECENT_MAX);
+  renderRecent();
+  persist();
+  const first = hexToRgba(recentColors[0]);
+  if (first) setColor(first);
+}
+
 async function save(): Promise<void> {
   if (docPath) await writePng(docPath);
   else await saveAs();
@@ -330,6 +360,9 @@ function initChrome(version: string): void {
       "undo": () => editor.undo(),
       "redo": () => editor.redo(),
     },
+    customMenu: [
+      { group: "file", items: [{ label: "Open palette…", action: () => void openPalette() }] },
+    ],
     showAuxPane: true,
     updater: true,
   });
