@@ -252,67 +252,94 @@ async function confirmDiscard(): Promise<boolean> {
   return confirm("Discard unsaved changes?", { title: "Pixel Editor", kind: "warning" });
 }
 
-// ---- New: size picker (the one app-specific modal — document creation) --
+// ---- Size picker modal (shared by New and Resize) ---------------------
+
+interface SizeOpts {
+  title: string;
+  width: number;
+  height: number;
+  confirmLabel: string;
+}
+
+/** Resolve to the chosen { width, height }, or null if cancelled. */
+function pickSize(o: SizeOpts): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "pe-modal-backdrop";
+    const modal = document.createElement("div");
+    modal.className = "pe-modal";
+
+    const h = document.createElement("h2");
+    h.textContent = o.title;
+
+    const presetRow = document.createElement("div");
+    presetRow.className = "pe-preset-row";
+    const wInput = numberInput(o.width);
+    const hInput = numberInput(o.height);
+    for (const n of [16, 32, 64]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pe-preset";
+      b.textContent = `${n}×${n}`;
+      b.addEventListener("click", () => { wInput.value = String(n); hInput.value = String(n); });
+      presetRow.appendChild(b);
+    }
+
+    const dims = document.createElement("div");
+    dims.className = "pe-dims";
+    dims.append(field("Width", wInput), times(), field("Height", hInput));
+
+    const actions = document.createElement("div");
+    actions.className = "pe-modal-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "pe-btn";
+    cancel.textContent = "Cancel";
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "pe-btn pe-btn-primary";
+    confirmBtn.textContent = o.confirmLabel;
+    actions.append(cancel, confirmBtn);
+
+    modal.append(h, presetRow, dims, actions);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    wInput.focus();
+    wInput.select();
+
+    const done = (value: { width: number; height: number } | null) => {
+      backdrop.remove();
+      resolve(value);
+    };
+    cancel.addEventListener("click", () => done(null));
+    confirmBtn.addEventListener("click", () => done({ width: clampDim(wInput.value), height: clampDim(hInput.value) }));
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) done(null); });
+    backdrop.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); done({ width: clampDim(wInput.value), height: clampDim(hInput.value) }); }
+      if (e.key === "Escape") { e.preventDefault(); done(null); }
+    });
+  });
+}
 
 async function pickSizeAndNew(): Promise<void> {
   if (!(await confirmDiscard())) return;
-  const backdrop = document.createElement("div");
-  backdrop.className = "pe-modal-backdrop";
-  const modal = document.createElement("div");
-  modal.className = "pe-modal";
+  const s = await pickSize({ title: "New pixel art", width: DEFAULT_SIZE, height: DEFAULT_SIZE, confirmLabel: "Create" });
+  if (s) newDoc(s.width, s.height);
+}
 
-  const h = document.createElement("h2");
-  h.textContent = "New pixel art";
-
-  const presetRow = document.createElement("div");
-  presetRow.className = "pe-preset-row";
-  const wInput = numberInput(DEFAULT_SIZE);
-  const hInput = numberInput(DEFAULT_SIZE);
-  for (const n of [16, 32, 64]) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "pe-preset";
-    b.textContent = `${n}×${n}`;
-    b.addEventListener("click", () => { wInput.value = String(n); hInput.value = String(n); });
-    presetRow.appendChild(b);
-  }
-
-  const dims = document.createElement("div");
-  dims.className = "pe-dims";
-  dims.append(field("Width", wInput), times(), field("Height", hInput));
-
-  const actions = document.createElement("div");
-  actions.className = "pe-modal-actions";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "pe-btn";
-  cancel.textContent = "Cancel";
-  const create = document.createElement("button");
-  create.type = "button";
-  create.className = "pe-btn pe-btn-primary";
-  create.textContent = "Create";
-  actions.append(cancel, create);
-
-  modal.append(h, presetRow, dims, actions);
-  backdrop.appendChild(modal);
-  document.body.appendChild(backdrop);
-  wInput.focus();
-  wInput.select();
-
-  const close = () => backdrop.remove();
-  const submit = () => {
-    const w = clampDim(wInput.value);
-    const hh = clampDim(hInput.value);
-    close();
-    newDoc(w, hh);
-  };
-  cancel.addEventListener("click", close);
-  create.addEventListener("click", submit);
-  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
-  backdrop.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); submit(); }
-    if (e.key === "Escape") { e.preventDefault(); close(); }
+// Resize the current canvas, keeping the art (anchored top-left; cropped or
+// extended with transparent cells). Undoable.
+async function resizeCanvas(): Promise<void> {
+  const s = await pickSize({
+    title: "Resize canvas",
+    width: editor.width,
+    height: editor.height,
+    confirmLabel: "Resize",
   });
+  if (!s) return;
+  editor.resize(s.width, s.height);
+  updateTitle();
+  updateState();
 }
 
 function clampDim(v: string): number {
@@ -362,6 +389,7 @@ function initChrome(version: string): void {
     },
     customMenu: [
       { group: "file", items: [{ label: "Open palette…", action: () => void openPalette() }] },
+      { group: "image", items: [{ label: "Resize canvas…", shortcut: "Ctrl+R", action: () => void resizeCanvas() }] },
     ],
     showAuxPane: true,
     updater: true,

@@ -24,6 +24,8 @@ export interface PixelEditor {
   width: number;
   height: number;
   load(width: number, height: number, pixels?: Uint8ClampedArray<ArrayBuffer>): void;
+  /** Change the grid dimensions, keeping the art anchored top-left. Undoable. */
+  resize(width: number, height: number): void;
   setTool(tool: Tool): void;
   setColor(color: RGBA): void;
   undo(): void;
@@ -44,8 +46,20 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
   let tool: Tool = "paint";
   let color: RGBA = { r: 221, g: 117, b: 150, a: 255 }; // krill accent to start
 
-  const undoStack: Uint8ClampedArray<ArrayBuffer>[] = [];
-  const redoStack: Uint8ClampedArray<ArrayBuffer>[] = [];
+  // Snapshots carry dimensions so undo/redo survive a resize.
+  interface Snapshot { w: number; h: number; pixels: Uint8ClampedArray<ArrayBuffer>; }
+  const undoStack: Snapshot[] = [];
+  const redoStack: Snapshot[] = [];
+  const snapshot = (): Snapshot => ({ w: width, h: height, pixels: pixels.slice() });
+  function restore(s: Snapshot): void {
+    const dimsChanged = s.w !== width || s.h !== height;
+    width = s.w;
+    height = s.h;
+    pixels = s.pixels;
+    lastHover = null;
+    if (dimsChanged) fit();
+    else render();
+  }
 
   // The display canvas (scaled view), a cursor-overlay canvas drawn on top
   // (the brush preview — the hovered cell shows the color that will land), and
@@ -256,7 +270,7 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
   function endStroke(): void {
     if (!strokeBefore) return;
     if (strokeChanged) {
-      undoStack.push(strokeBefore);
+      undoStack.push({ w: width, h: height, pixels: strokeBefore });
       if (undoStack.length > MAX_UNDO) undoStack.shift();
       redoStack.length = 0;
       opts.onChange?.(tool === "erase" ? null : { ...color });
@@ -298,9 +312,8 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     undo() {
       const prev = undoStack.pop();
       if (!prev) return;
-      redoStack.push(pixels.slice());
-      pixels = prev;
-      render();
+      redoStack.push(snapshot());
+      restore(prev);
       opts.onChange?.(null);
       opts.onHistory?.();
     },
@@ -308,9 +321,32 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     redo() {
       const next = redoStack.pop();
       if (!next) return;
-      undoStack.push(pixels.slice());
+      undoStack.push(snapshot());
+      restore(next);
+      opts.onChange?.(null);
+      opts.onHistory?.();
+    },
+
+    resize(nw, nh) {
+      const w = Math.max(1, Math.min(512, Math.round(nw)));
+      const h = Math.max(1, Math.min(512, Math.round(nh)));
+      if (w === width && h === height) return;
+      undoStack.push(snapshot());
+      if (undoStack.length > MAX_UNDO) undoStack.shift();
+      redoStack.length = 0;
+      // Keep the art anchored top-left; crop or extend with transparent.
+      const next = new Uint8ClampedArray(w * h * 4);
+      const cw = Math.min(width, w);
+      const ch = Math.min(height, h);
+      for (let y = 0; y < ch; y++) {
+        const src = y * width * 4;
+        next.set(pixels.subarray(src, src + cw * 4), y * w * 4);
+      }
+      width = w;
+      height = h;
       pixels = next;
-      render();
+      lastHover = null;
+      fit();
       opts.onChange?.(null);
       opts.onHistory?.();
     },
