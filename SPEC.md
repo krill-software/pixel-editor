@@ -155,5 +155,5 @@ Canonical krill dimensions: 1296 × 800 default, 720 × 445 minimum, centered.
 3. **M3 — polish.** Whatever the use teaches; candidates: line/rectangle shapes,
    grid resize/crop of an open doc.
 
-> pixel-editor starts on the proof-of-concept list in CLAUDE.md until the design
-> bar is signed off. Don't release until it graduates.
+> Graduated 2026-06-18; ships v0.1.0 (M1 feature set). M2 (zoom/pan, bucket
+> fill, swappable palette, export scale) is now post-v1 work.
