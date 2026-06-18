@@ -14,6 +14,8 @@ export interface EditorOptions {
   onHover?: (cell: { x: number; y: number } | null) => void;
   /** Fired when undo/redo availability changes. */
   onHistory?: () => void;
+  /** Fired after every buffer render — drives the live tiling preview. */
+  onRender?: () => void;
 }
 
 const MAX_UNDO = 100;
@@ -34,6 +36,8 @@ export interface PixelEditor {
   canRedo(): boolean;
   fit(): void;
   hash(): string;
+  /** The current buffer drawn at native resolution (1 cell = 1 px), for tiling. */
+  nativeCanvas(): HTMLCanvasElement;
   toPngBlob(): Promise<Blob>;
 }
 
@@ -196,6 +200,8 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
       }
       ctx.stroke();
     }
+
+    opts.onRender?.();
   }
 
   // ---- pointer → cell + stroke handling --------------------------------
@@ -208,20 +214,72 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     return { x, y };
   }
 
+  // Like cellAt but clamped into the grid — so a shift-rectangle dragged past
+  // the edge still fills out to the border.
+  function cellAtClamped(e: PointerEvent): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / scale);
+    const y = Math.floor((e.clientY - rect.top) / scale);
+    return {
+      x: Math.max(0, Math.min(width - 1, x)),
+      y: Math.max(0, Math.min(height - 1, y)),
+    };
+  }
+
   let strokeBefore: Uint8ClampedArray<ArrayBuffer> | null = null;
   let strokeChanged = false;
   let lastCell: { x: number; y: number } | null = null;
+  // Origin of an in-progress shift-drag filled rectangle (null = not dragging one).
+  let rectOrigin: { x: number; y: number } | null = null;
+
+  // Eyedropper — adopt the color under a cell. Bound to the Pick tool and to
+  // right-click (any tool). Empty cells have nothing to pick.
+  function pickAt(x: number, y: number): void {
+    const c = getCell(x, y);
+    if (c.a === 0) return;
+    color = c;
+    opts.onPick?.({ ...c });
+  }
 
   function applyAt(x: number, y: number): void {
     if (tool === "pick") {
-      const c = getCell(x, y);
-      if (c.a === 0) return; // empty cell — nothing to pick
-      color = c;
-      opts.onPick?.({ ...c });
+      pickAt(x, y);
       return;
     }
     const c = tool === "erase" ? { r: 0, g: 0, b: 0, a: 0 } : color;
     if (setCell(x, y, c)) strokeChanged = true;
+  }
+
+  // Fill the inclusive rectangle a..b with the active op (paint or erase).
+  function fillRect(a: { x: number; y: number }, b: { x: number; y: number }): void {
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+    const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const c = tool === "erase" ? { r: 0, g: 0, b: 0, a: 0 } : color;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (setCell(x, y, c)) strokeChanged = true;
+      }
+    }
+  }
+
+  // Preview the pending rectangle on the cursor overlay (fill for paint, accent
+  // outline always) so the user sees the area before releasing.
+  function renderRectPreview(end: { x: number; y: number }): void {
+    if (!rectOrigin) return;
+    const cssW = width * scale;
+    const cssH = height * scale;
+    cctx.clearRect(0, 0, cssW, cssH);
+    const x0 = Math.min(rectOrigin.x, end.x), x1 = Math.max(rectOrigin.x, end.x);
+    const y0 = Math.min(rectOrigin.y, end.y), y1 = Math.max(rectOrigin.y, end.y);
+    const px = x0 * scale, py = y0 * scale;
+    const pw = (x1 - x0 + 1) * scale, ph = (y1 - y0 + 1) * scale;
+    if (tool !== "erase") {
+      cctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255})`;
+      cctx.fillRect(px, py, pw, ph);
+    }
+    cctx.lineWidth = 2;
+    cctx.strokeStyle = "#dd7596";
+    cctx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
   }
 
   // Bresenham so a fast drag paints a continuous run, not dotted gaps.
@@ -242,6 +300,12 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
   canvas.addEventListener("pointerdown", (e) => {
     const cell = cellAt(e);
     if (!cell) return;
+    // Right-click = eyedropper, whatever the active tool. One-shot, no undo.
+    if (e.button === 2) {
+      pickAt(cell.x, cell.y);
+      return;
+    }
+    if (e.button !== 0) return;
     canvas.setPointerCapture(e.pointerId);
     if (tool === "pick") {
       applyAt(cell.x, cell.y); // one-shot, no stroke/undo
@@ -249,6 +313,13 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     }
     strokeBefore = pixels.slice();
     strokeChanged = false;
+    // Shift-drag paints a filled rectangle — defer the fill to release, just
+    // preview it while dragging.
+    if (e.shiftKey) {
+      rectOrigin = cell;
+      renderRectPreview(cell);
+      return;
+    }
     lastCell = cell;
     applyAt(cell.x, cell.y);
     render();
@@ -258,6 +329,10 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     const cell = cellAt(e);
     lastHover = cell;
     opts.onHover?.(cell);
+    if (rectOrigin) {
+      renderRectPreview(cellAtClamped(e));
+      return;
+    }
     if (strokeBefore && cell) {
       if (lastCell) applyLine(lastCell, cell);
       else applyAt(cell.x, cell.y);
@@ -267,7 +342,23 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
     renderCursor();
   });
 
-  function endStroke(): void {
+  function endStroke(e?: PointerEvent): void {
+    // Commit a shift-rectangle: fill origin..release, then snapshot once.
+    if (rectOrigin) {
+      const end = e ? cellAtClamped(e) : (lastHover ?? rectOrigin);
+      fillRect(rectOrigin, end);
+      rectOrigin = null;
+      finishStroke();
+      render();
+      renderCursor();
+      return;
+    }
+    finishStroke();
+  }
+
+  // Shared tail for any stroke that may have changed the buffer: push undo,
+  // notify, reset.
+  function finishStroke(): void {
     if (!strokeBefore) return;
     if (strokeChanged) {
       undoStack.push({ w: width, h: height, pixels: strokeBefore });
@@ -282,6 +373,8 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
 
   canvas.addEventListener("pointerup", endStroke);
   canvas.addEventListener("pointercancel", endStroke);
+  // Suppress the native context menu so right-click is a clean eyedropper.
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerleave", () => {
     lastHover = null;
     renderCursor();
@@ -363,6 +456,13 @@ export function createEditor(host: HTMLElement, opts: EditorOptions = {}): Pixel
         h = Math.imul(h, 0x01000193);
       }
       return `${width}x${height}:${(h >>> 0).toString(16)}`;
+    },
+
+    nativeCanvas() {
+      scratch.width = width;
+      scratch.height = height;
+      sctx.putImageData(new ImageData(pixels.slice(), width, height), 0, 0);
+      return scratch;
     },
 
     toPngBlob() {

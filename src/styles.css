@@ -43,7 +43,48 @@ body {
   display: flex;
   min-height: 0;
 }
+
+/* Folder-paging chevrons — float over the edit area's edges, vertically
+ * centered, clear of the preview panel. */
+.pe-pager {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 54px;
+  padding: 0;
+  background: var(--fm-bg);
+  border: 1px solid var(--fm-rule-strong);
+  border-radius: 8px;
+  color: var(--fm-text);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(48, 52, 63, 0.12);
+  transition: color 100ms ease, border-color 100ms ease, opacity 100ms ease;
+}
+.pe-pager-prev {
+  left: 14px;
+}
+.pe-pager-next {
+  right: 14px;
+}
+.pe-pager:hover:not(:disabled) {
+  color: var(--fm-accent-strong);
+  border-color: var(--fm-accent);
+}
+.pe-pager:disabled {
+  color: var(--fm-rule-strong);
+  cursor: default;
+  opacity: 0.5;
+}
+.pe-pager[hidden] {
+  display: none;
+}
 .pe-stage {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -51,6 +92,30 @@ body {
   justify-content: center;
   overflow: auto;
   background: var(--fm-bg);
+}
+
+/* Preview panel — right of the edit area, separated by a hairline rule. The
+ * tile repeats at actual size, so the canvas can exceed the pane: let it
+ * scroll rather than scale. */
+.pe-preview-pane {
+  flex: 0 0 auto;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 14px;
+  overflow: auto;
+  border-left: 1px solid var(--fm-rule);
+  background: var(--fm-bg);
+}
+.pe-preview-pane .pe-section-h {
+  align-self: stretch;
+}
+.pe-preview-canvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--fm-rule-strong);
+  box-shadow: 0 4px 14px rgba(48, 52, 63, 0.1);
 }
 
 /* The grid canvas and the cursor-overlay canvas share this frame so the
@@ -181,6 +246,7 @@ kbd {
   gap: 6px;
 }
 .pe-recent-swatch {
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
   padding: 0;

@@ -66,6 +66,32 @@ fn read_text(path: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| kfs::format_io_err(&path, std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
+// List the sibling .png files in the folder of `path` (absolute paths,
+// unsorted — the webview natural-sorts them). Backs folder paging: stepping to
+// the next/previous sprite in the same directory without a file dialog. Kept
+// local for now; hoist into krill-desktop-core when a second app wants it.
+#[tauri::command]
+fn list_siblings(path: String) -> Result<Vec<String>, String> {
+    let p = Path::new(&path);
+    let dir = match p.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let entries = fs::read_dir(dir).map_err(|e| kfs::format_io_err(&path, e))?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let ep = entry.path();
+        let is_png = ep
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("png"));
+        if is_png && ep.is_file() {
+            out.push(kfs::absolute_path(&ep));
+        }
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 fn dev_test_file() -> Option<String> {
     kdev::test_file(env!("CARGO_MANIFEST_DIR"), &["test.png"])
@@ -82,6 +108,7 @@ pub fn run() {
             read_png,
             write_png,
             read_text,
+            list_siblings,
             load_state,
             save_state,
             dev_test_file,

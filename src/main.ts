@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getMatches } from "@tauri-apps/plugin-cli";
-import { confirm, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createEditor, decodePng, type PixelEditor } from "./editor";
 import { hexToRgba, rgbaToHex, type RGBA, type Tool } from "./types";
@@ -25,6 +25,10 @@ interface AppState {
 
 const DEFAULT_SIZE = 32;
 const RECENT_MAX = 12;
+// Pixel art is small by design. A grid larger than this isn't a pixel-editor
+// document — at a window-fitting integer scale you can't see or click cells.
+// New clamps to this; Open rejects PNGs above it (pointing at paint instead).
+const MAX_GRID = 512;
 
 // ---- app state --------------------------------------------------------
 
@@ -34,6 +38,19 @@ let savedHash = "";
 let persisted: AppState = {};
 let recentColors: string[] = [];
 let currentColor: RGBA = { r: 221, g: 117, b: 150, a: 255 };
+
+// Folder paging — the .png files alongside the open document, natural-sorted.
+// Stepping through them (chevrons / Ctrl+[ / Ctrl+]) replaces a File→Open per
+// sprite. Still one document on screen; this is navigation, not a project tree.
+let siblings: string[] = [];
+let prevBtn: HTMLButtonElement;
+let nextBtn: HTMLButtonElement;
+
+// Live tiling preview — the document repeated PREVIEW_TILES × PREVIEW_TILES at
+// actual pixel size, so you can judge how a tile reads when it repeats.
+const PREVIEW_TILES = 5;
+let previewCanvas: HTMLCanvasElement;
+let previewCtx: CanvasRenderingContext2D | null = null;
 
 // ---- DOM refs ---------------------------------------------------------
 
@@ -95,13 +112,48 @@ function setColor(c: RGBA, fromPick = false): void {
 }
 
 // Cycle the current color through the saved palette — wheel over the canvas.
+// Walks the same color-grouped order the rail shows, so wheeling moves through
+// neighbouring hues rather than recency order.
 function cycleColor(dir: number): void {
-  if (recentColors.length < 2) return;
+  const order = sortedPalette();
+  if (order.length < 2) return;
   const cur = rgbaToHex(currentColor);
-  let i = recentColors.indexOf(cur);
-  i = i === -1 ? 0 : (i + dir + recentColors.length) % recentColors.length;
-  const c = hexToRgba(recentColors[i]);
+  let i = order.indexOf(cur);
+  i = i === -1 ? 0 : (i + dir + order.length) % order.length;
+  const c = hexToRgba(order[i]);
   if (c) setColor(c);
+}
+
+// The palette grouped by color: chromatic swatches first, sorted by hue then
+// lightness; near-greys collected at the end by lightness. `recentColors` stays
+// recency-ordered (that drives the keep-newest cap); this is a display view.
+function sortedPalette(): string[] {
+  return [...recentColors].sort((a, b) => {
+    const ka = colorKey(a), kb = colorKey(b);
+    return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+  });
+}
+
+function colorKey(hex: string): [number, number, number] {
+  const { h, s, l } = hexToHsl(hex);
+  const grey = s < 0.12;
+  return [grey ? 1 : 0, grey ? l : h, l];
+}
+
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const rgb = hexToRgba(hex);
+  if (!rgb) return { h: 0, s: 0, l: 0 };
+  const r = rgb.r / 255, g = rgb.g / 255, b = rgb.b / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return { h: h / 6, s, l };
 }
 
 function refreshRecentActive(): void {
@@ -120,7 +172,7 @@ function rememberColor(hex: string): void {
 
 function renderRecent(): void {
   recentEl.replaceChildren();
-  for (const hex of recentColors) {
+  for (const hex of sortedPalette()) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "pe-recent-swatch";
@@ -158,26 +210,86 @@ function newDoc(w: number, h: number): void {
   docPath = null;
   markClean();
   updateState();
+  void syncPager();
+}
+
+// ---- folder paging ---------------------------------------------------
+
+// Refresh the sibling list for the current document's folder, then update the
+// chevrons. Natural sort (numeric) so tile_2 precedes tile_10.
+async function syncPager(): Promise<void> {
+  if (docPath) {
+    try {
+      const list = await invoke<string[]>("list_siblings", { path: docPath });
+      list.sort((a, b) => basename(a).localeCompare(basename(b), undefined, { numeric: true, sensitivity: "base" }));
+      siblings = list;
+    } catch (e) {
+      console.error("list_siblings failed:", e);
+      siblings = [docPath];
+    }
+  } else {
+    siblings = [];
+  }
+  renderPager();
+}
+
+// Step to the next (+1) / previous (-1) .png in the folder. No wrap — the
+// chevrons disable at the ends. openPath() handles the unsaved-changes prompt.
+async function page(dir: number): Promise<void> {
+  if (!docPath || siblings.length < 2) return;
+  const idx = siblings.indexOf(docPath);
+  if (idx < 0) return;
+  const next = idx + dir;
+  if (next < 0 || next >= siblings.length) return;
+  await openPath(siblings[next]);
+}
+
+function renderPager(): void {
+  if (!prevBtn || !nextBtn) return;
+  const idx = docPath ? siblings.indexOf(docPath) : -1;
+  const show = siblings.length >= 2 && idx >= 0;
+  prevBtn.hidden = !show;
+  nextBtn.hidden = !show;
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= siblings.length - 1;
 }
 
 async function openPath(path: string): Promise<void> {
-  if (!(await confirmDiscard())) return;
+  // Read + decode first (so we know the size before touching the open doc),
+  // then validate, then prompt to discard, then load. Failures surface as a
+  // dialog — a swallowed error reads as "Open does nothing".
   let read: PngRead;
   try {
     read = await invoke<PngRead>("read_png", { path });
   } catch (e) {
     console.error("read_png failed:", e);
+    await message(String(e), { title: "Couldn’t open file", kind: "error" });
     return;
   }
+
+  let decoded: { width: number; height: number; pixels: Uint8ClampedArray<ArrayBuffer> };
   try {
-    const { width, height, pixels } = await decodePng(new Uint8Array(read.bytes));
-    editor.load(width, height, pixels);
-    docPath = read.path;
-    markClean();
-    updateState();
+    decoded = await decodePng(new Uint8Array(read.bytes));
   } catch (e) {
     console.error("decode failed:", e);
+    await message(`${basename(read.path)} isn’t a PNG this app can read.`, { title: "Couldn’t open file", kind: "error" });
+    return;
   }
+
+  if (decoded.width > MAX_GRID || decoded.height > MAX_GRID) {
+    await message(
+      `${basename(read.path)} is ${decoded.width} × ${decoded.height}. Pixel Editor edits sprite-scale art up to ${MAX_GRID} × ${MAX_GRID} — for full-size images, use paint.`,
+      { title: "Image too large", kind: "warning" },
+    );
+    return;
+  }
+
+  if (!(await confirmDiscard())) return;
+  editor.load(decoded.width, decoded.height, decoded.pixels);
+  docPath = read.path;
+  markClean();
+  updateState();
+  await syncPager();
 }
 
 async function openViaDialog(): Promise<void> {
@@ -241,6 +353,7 @@ async function writePng(path: string): Promise<void> {
     const abs = await invoke<string>("write_png", { path, bytes });
     docPath = abs;
     markClean();
+    await syncPager();
   } catch (e) {
     console.error("write_png failed:", e);
   }
@@ -343,7 +456,7 @@ async function resizeCanvas(): Promise<void> {
 }
 
 function clampDim(v: string): number {
-  return Math.max(1, Math.min(512, Math.round(Number(v) || DEFAULT_SIZE)));
+  return Math.max(1, Math.min(MAX_GRID, Math.round(Number(v) || DEFAULT_SIZE)));
 }
 
 function numberInput(value: number): HTMLInputElement {
@@ -388,7 +501,11 @@ function initChrome(version: string): void {
       "redo": () => editor.redo(),
     },
     customMenu: [
-      { group: "file", items: [{ label: "Open palette…", action: () => void openPalette() }] },
+      { group: "file", items: [
+        { label: "Open palette…", action: () => void openPalette() },
+        { label: "Previous file", shortcut: "Ctrl+[", action: () => void page(-1) },
+        { label: "Next file", shortcut: "Ctrl+]", action: () => void page(1) },
+      ] },
       { group: "image", items: [{ label: "Resize canvas…", shortcut: "Ctrl+R", action: () => void resizeCanvas() }] },
     ],
     showAuxPane: true,
@@ -401,11 +518,22 @@ function initChrome(version: string): void {
   stage.className = "pe-stage";
   chrome.mainContent!.appendChild(stage);
 
+  // Folder-paging chevrons — anchored to the stage (the edit area) so they sit
+  // at its edges, clear of the preview panel. Hidden until a saved doc has
+  // siblings.
+  prevBtn = pagerButton("prev", "Previous file  (Ctrl+[)", ICON.chevronLeft, () => void page(-1));
+  nextBtn = pagerButton("next", "Next file  (Ctrl+])", ICON.chevronRight, () => void page(1));
+  stage.append(prevBtn, nextBtn);
+
+  // Preview panel — right of the edit area, repeating the tile at actual size.
+  buildPreview(chrome.mainContent!);
+
   editor = createEditor(stage, {
     onChange: afterEdit,
     onPick: (c) => setColor(c, true),
     onHover: (cell) => updateState(cell),
     onHistory: updateTitle,
+    onRender: renderPreview,
   });
 
   // Wheel over the canvas cycles the current color through the saved palette —
@@ -468,6 +596,71 @@ function buildRail(aux: HTMLElement): void {
   rail.append(toolsSection, colorSection);
 }
 
+function buildPreview(mainContent: HTMLElement): void {
+  const pane = document.createElement("aside");
+  pane.className = "pe-preview-pane";
+
+  const heading = document.createElement("div");
+  heading.className = "pe-section-h";
+  heading.textContent = `Preview · ${PREVIEW_TILES}×${PREVIEW_TILES}`;
+
+  previewCanvas = document.createElement("canvas");
+  previewCanvas.className = "pe-preview-canvas";
+  previewCtx = previewCanvas.getContext("2d");
+
+  pane.append(heading, previewCanvas);
+  mainContent.appendChild(pane);
+}
+
+// Repaint the tiling preview from the editor's current native buffer. Fired on
+// every editor render (so it tracks live edits) plus open / new / resize.
+function renderPreview(): void {
+  if (!previewCtx) return;
+  const w = editor.width;
+  const h = editor.height;
+  const pw = w * PREVIEW_TILES;
+  const ph = h * PREVIEW_TILES;
+  if (previewCanvas.width !== pw || previewCanvas.height !== ph) {
+    previewCanvas.width = pw;
+    previewCanvas.height = ph;
+    previewCanvas.style.width = `${pw}px`;
+    previewCanvas.style.height = `${ph}px`;
+  }
+
+  // Transparency checkerboard (Space-Cadet-alpha over Ghost White, matching the
+  // canvas), in fixed 4px blocks independent of tile size.
+  previewCtx.fillStyle = "#fafaff";
+  previewCtx.fillRect(0, 0, pw, ph);
+  previewCtx.fillStyle = "rgba(48, 52, 63, 0.06)";
+  const block = 4;
+  for (let y = 0; y < ph; y += block) {
+    for (let x = 0; x < pw; x += block) {
+      if ((x / block + y / block) % 2 === 1) previewCtx.fillRect(x, y, block, block);
+    }
+  }
+
+  // The tile, repeated at actual size (no scaling).
+  previewCtx.imageSmoothingEnabled = false;
+  const src = editor.nativeCanvas();
+  for (let ty = 0; ty < PREVIEW_TILES; ty++) {
+    for (let tx = 0; tx < PREVIEW_TILES; tx++) {
+      previewCtx.drawImage(src, tx * w, ty * h);
+    }
+  }
+}
+
+function pagerButton(side: "prev" | "next", title: string, icon: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `pe-pager pe-pager-${side}`;
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.innerHTML = icon;
+  b.hidden = true;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
 function section(title: string): HTMLElement {
   const s = document.createElement("section");
   s.className = "pe-section";
@@ -500,7 +693,13 @@ function installKeyboard(): void {
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Folder paging — Ctrl+] / Ctrl+[ step through the current folder.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      if (e.code === "BracketRight") { e.preventDefault(); void page(1); return; }
+      if (e.code === "BracketLeft") { e.preventDefault(); void page(-1); return; }
+      return;
+    }
+    if (e.altKey) return;
     switch (e.code) {
       case "KeyB": setTool("paint"); break;
       case "KeyE": setTool("erase"); break;
@@ -540,6 +739,8 @@ const ICON = {
   brush: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14.622 17.897-10.68-2.913"/><path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 9.354a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z"/><path d="M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 21.122 14 19.5 14 17"/></svg>`,
   eraser: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
   pipette: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>`,
+  chevronLeft: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`,
+  chevronRight: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
 };
 
 // ---- boot ------------------------------------------------------------
