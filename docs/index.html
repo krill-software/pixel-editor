@@ -1,0 +1,212 @@
+---
+layout: app
+tagline: a calm pixel-art editor for Linux
+description: A calm pixel-art editor for Linux. Set a grid, place colored pixels, and save sprite-scale art as a PNG where one cell is one image pixel.
+og_description: Set a grid, place colored pixels, and save as a PNG where one cell is one image pixel. Free and open source.
+lede: Set a grid size, pick a color, and place pixels to build sprite-scale art — then save it as a plain PNG where one cell is exactly one image pixel.
+features_heading: A grid and a handful of tools.
+features:
+  - tag: Grid
+    title: One cell, one pixel
+    blurb: Start square at 16, 32, or 64 — or any width × height you like. Empty cells show a checkerboard, and the canvas scales up to fill the window so every pixel is a comfortable target.
+  - tag: Tools
+    title: Paint, erase, pick
+    blurb: Three tools, one key each — B, E, I. Click to place a pixel, drag to lay a run. Every stroke is one step on the undo stack, so nothing is ever a one-way door.
+  - tag: PNG
+    title: The .png is the document
+    blurb: A 32×32 canvas saves as a 32×32 PNG, transparency and all — and any PNG opens straight back into a grid of its size. No project format to learn, a perfect round-trip.
+  - tag: Paging
+    title: Flip through a folder
+    blurb: Working across a sheet of sprites? Step to the next or previous .png in the same folder with the chevrons or Ctrl+] and Ctrl+[ — your colors stay put, no file dialog.
+  - tag: Color
+    title: Your colors, close at hand
+    blurb: A current swatch with a native picker, and a strip of recent colors that follows you between files. Scroll the canvas to cycle the set; open a .gpl palette to load your own.
+  - tag: Tauri · Rust
+    title: Native Linux
+    blurb: Small binary, AppImage and .deb, real .png file association, in-app updater. Built on Tauri and Rust — no Electron.
+extension: ".png"
+mock:
+  chrome: app
+---
+<style>
+  /* App-layout mock: hamburger + tool rail on the left, the grid in the main
+   * pane. No titlebar / status line — mock.chrome: app. The sprite is drawn in
+   * the locked palette (blush + rose) so the demo art respects the brand. */
+  .pe-app {
+    display: grid;
+    grid-template-columns: 190px 1fr;
+    min-height: 400px;
+    font-family: var(--sans);
+  }
+  .pe-rail {
+    border-right: 1px solid var(--rule);
+    padding: 10px 12px;
+  }
+  .pe-burger { color: var(--muted); font-size: 14px; padding: 2px 6px 12px; }
+  .pe-group { font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; padding: 6px 6px 4px; }
+  .pe-tool {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  .pe-tool svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+  .pe-tool .pe-key { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .pe-tool.on {
+    background: rgba(221, 117, 150, 0.10);
+    border-color: var(--accent);
+  }
+  .pe-tool.on svg { color: var(--accent); }
+
+  .pe-color { display: flex; align-items: center; gap: 9px; padding: 6px 10px 2px; }
+  .pe-swatch {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    background: #dd7596;
+    box-shadow: inset 0 0 0 1px rgba(48, 52, 63, 0.18);
+  }
+  .pe-hex { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+  .pe-recent { display: flex; gap: 6px; padding: 10px 10px 0; }
+  .pe-r {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1px rgba(48, 52, 63, 0.18);
+  }
+  .pe-r.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
+
+  .pe-main {
+    display: flex;
+    flex-direction: column;
+    padding: 14px 24px 22px;
+  }
+  .pe-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 22px;
+  }
+  .pe-readout { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .pe-dirty { color: var(--accent); }
+  .pe-winbtns { font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: 2px; }
+
+  .pe-stage { display: flex; flex: 1; align-items: center; justify-content: center; }
+  .pe-grid {
+    width: 270px;
+    height: 240px;
+    border-radius: 4px;
+    box-shadow: 0 12px 36px rgba(48, 52, 63, 0.12), inset 0 0 0 1px rgba(48, 52, 63, 0.08);
+    image-rendering: pixelated;
+  }
+
+  @media (max-width: 720px) {
+    .pe-app { grid-template-columns: 1fr; }
+    .pe-rail { display: none; }
+  }
+</style>
+<div class="pe-app">
+  <aside class="pe-rail">
+    <div class="pe-burger">☰</div>
+    <div class="pe-group">Tools</div>
+    <div class="pe-tool on">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02Z"/></svg>
+      Paint<span class="pe-key">B</span>
+    </div>
+    <div class="pe-tool">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+      Erase<span class="pe-key">E</span>
+    </div>
+    <div class="pe-tool">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>
+      Pick<span class="pe-key">I</span>
+    </div>
+    <div class="pe-group">Color</div>
+    <div class="pe-color">
+      <span class="pe-swatch"></span>
+      <span class="pe-hex">#DD7596</span>
+    </div>
+    <div class="pe-recent">
+      <span class="pe-r on" style="background:#dd7596"></span>
+      <span class="pe-r" style="background:#ff82bf"></span>
+      <span class="pe-r" style="background:#30343f"></span>
+      <span class="pe-r" style="background:#878472"></span>
+    </div>
+  </aside>
+  <div class="pe-main">
+    <div class="pe-topbar">
+      <span class="pe-readout">heart.png <span class="pe-dirty">•</span> · 9 × 8 · 4, 3</span>
+      <span class="pe-winbtns">─ ▢ ✕</span>
+    </div>
+    <div class="pe-stage">
+      <svg class="pe-grid" viewBox="0 0 180 160" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <defs>
+          <pattern id="checker" width="40" height="40" patternUnits="userSpaceOnUse">
+            <rect width="40" height="40" fill="#fafaff"/>
+            <rect width="20" height="20" fill="rgba(48,52,63,0.05)"/>
+            <rect x="20" y="20" width="20" height="20" fill="rgba(48,52,63,0.05)"/>
+          </pattern>
+          <pattern id="lines" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M20 0V20M0 20H20" stroke="rgba(48,52,63,0.08)" stroke-width="1" fill="none"/>
+          </pattern>
+        </defs>
+        <rect width="180" height="160" fill="url(#checker)"/>
+        <g fill="#ff82bf">
+          <rect x="20" y="0" width="20" height="20"/>
+          <rect x="40" y="0" width="20" height="20"/>
+          <rect x="0" y="20" width="20" height="20"/>
+          <rect x="20" y="20" width="20" height="20"/>
+          <rect x="40" y="20" width="20" height="20"/>
+          <rect x="0" y="40" width="20" height="20"/>
+          <rect x="20" y="40" width="20" height="20"/>
+          <rect x="40" y="40" width="20" height="20"/>
+        </g>
+        <g fill="#dd7596">
+          <rect x="120" y="0" width="20" height="20"/>
+          <rect x="140" y="0" width="20" height="20"/>
+          <rect x="60" y="20" width="20" height="20"/>
+          <rect x="100" y="20" width="20" height="20"/>
+          <rect x="120" y="20" width="20" height="20"/>
+          <rect x="140" y="20" width="20" height="20"/>
+          <rect x="160" y="20" width="20" height="20"/>
+          <rect x="60" y="40" width="20" height="20"/>
+          <rect x="80" y="40" width="20" height="20"/>
+          <rect x="100" y="40" width="20" height="20"/>
+          <rect x="120" y="40" width="20" height="20"/>
+          <rect x="140" y="40" width="20" height="20"/>
+          <rect x="160" y="40" width="20" height="20"/>
+          <rect x="0" y="60" width="20" height="20"/>
+          <rect x="20" y="60" width="20" height="20"/>
+          <rect x="40" y="60" width="20" height="20"/>
+          <rect x="60" y="60" width="20" height="20"/>
+          <rect x="80" y="60" width="20" height="20"/>
+          <rect x="100" y="60" width="20" height="20"/>
+          <rect x="120" y="60" width="20" height="20"/>
+          <rect x="140" y="60" width="20" height="20"/>
+          <rect x="160" y="60" width="20" height="20"/>
+          <rect x="20" y="80" width="20" height="20"/>
+          <rect x="40" y="80" width="20" height="20"/>
+          <rect x="60" y="80" width="20" height="20"/>
+          <rect x="80" y="80" width="20" height="20"/>
+          <rect x="100" y="80" width="20" height="20"/>
+          <rect x="120" y="80" width="20" height="20"/>
+          <rect x="140" y="80" width="20" height="20"/>
+          <rect x="40" y="100" width="20" height="20"/>
+          <rect x="60" y="100" width="20" height="20"/>
+          <rect x="80" y="100" width="20" height="20"/>
+          <rect x="100" y="100" width="20" height="20"/>
+          <rect x="120" y="100" width="20" height="20"/>
+          <rect x="60" y="120" width="20" height="20"/>
+          <rect x="80" y="120" width="20" height="20"/>
+          <rect x="100" y="120" width="20" height="20"/>
+          <rect x="80" y="140" width="20" height="20"/>
+        </g>
+        <rect width="180" height="160" fill="url(#lines)"/>
+      </svg>
+    </div>
+  </div>
+</div>

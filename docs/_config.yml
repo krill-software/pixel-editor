@@ -1,0 +1,8 @@
+remote_theme: krill-software/docs-theme@v4.3
+plugins:
+  - jekyll-remote-theme
+
+title: Pixel Editor
+slug: pixel-editor
+brand: pixel-editor
+version: 0.1.0
