@@ -1,7 +1,7 @@
 import "@krill-software/desktop-ui/styles";
 import "./styles.css";
 
-import { mountChrome, parseGpl, showBootError } from "@krill-software/desktop-ui";
+import { FAMILY_ORDER, familyOf, mountChrome, parseGpl, showBootError } from "@krill-software/desktop-ui";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -20,11 +20,12 @@ interface PngRead {
 interface AppState {
   window?: unknown;
   recent?: string[];
+  /** The saved palette. `recent_colors` is the legacy key, read once for migration. */
+  palette?: string[];
   recent_colors?: string[];
 }
 
 const DEFAULT_SIZE = 32;
-const RECENT_MAX = 12;
 // Pixel art is small by design. A grid larger than this isn't a pixel-editor
 // document — at a window-fitting integer scale you can't see or click cells.
 // New clamps to this; Open rejects PNGs above it (pointing at paint instead).
@@ -36,7 +37,7 @@ let editor: PixelEditor;
 let docPath: string | null = null;
 let savedHash = "";
 let persisted: AppState = {};
-let recentColors: string[] = [];
+let palette: string[] = [];
 let currentColor: RGBA = { r: 221, g: 117, b: 150, a: 255 };
 
 // Folder paging — the .png files alongside the open document, natural-sorted.
@@ -58,7 +59,7 @@ let readoutEl: HTMLElement;
 let swatchEl: HTMLElement;
 let colorInput: HTMLInputElement;
 let hexLabel: HTMLElement;
-let recentEl: HTMLElement;
+let paletteEl: HTMLElement;
 let toolButtons: Record<Tool, HTMLButtonElement>;
 let hoveredCell: { x: number; y: number } | null = null;
 
@@ -108,14 +109,14 @@ function setColor(c: RGBA, fromPick = false): void {
   hexLabel.textContent = hex;
   colorInput.value = hex;
   if (fromPick) rememberColor(hex);
-  else refreshRecentActive();
+  else refreshActive();
 }
 
 // Cycle the current color through the saved palette — wheel over the canvas.
-// Walks the same color-grouped order the rail shows, so wheeling moves through
-// neighbouring hues rather than recency order.
+// Walks the same grouped order the rail shows, so wheeling moves through
+// neighbouring hues group by group.
 function cycleColor(dir: number): void {
-  const order = sortedPalette();
+  const order = paletteOrder();
   if (order.length < 2) return;
   const cur = rgbaToHex(currentColor);
   let i = order.indexOf(cur);
@@ -124,20 +125,32 @@ function cycleColor(dir: number): void {
   if (c) setColor(c);
 }
 
-// The palette grouped by color: chromatic swatches first, sorted by hue then
-// lightness; near-greys collected at the end by lightness. `recentColors` stays
-// recency-ordered (that drives the keep-newest cap); this is a display view.
-function sortedPalette(): string[] {
-  return [...recentColors].sort((a, b) => {
-    const ka = colorKey(a), kb = colorKey(b);
-    return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
-  });
+// The palette bucketed into hue families (shared `familyOf`, so the labels and
+// banding match color-editor), each family sorted dark → light. Empty families
+// are dropped. `palette` itself stays insertion-ordered; this is a display view.
+function groupedPalette(): Array<{ fam: string; hexes: string[] }> {
+  const byFamily = new Map<string, string[]>();
+  for (const hex of palette) {
+    const rgb = hexToRgba(hex);
+    const fam = rgb ? familyOf(rgb.r, rgb.g, rgb.b) : "Neutral";
+    const arr = byFamily.get(fam) ?? [];
+    arr.push(hex);
+    byFamily.set(fam, arr);
+  }
+  const out: Array<{ fam: string; hexes: string[] }> = [];
+  for (const fam of FAMILY_ORDER) {
+    const arr = byFamily.get(fam);
+    if (!arr || arr.length === 0) continue;
+    arr.sort((a, b) => hexToHsl(a).l - hexToHsl(b).l);
+    out.push({ fam, hexes: arr });
+  }
+  return out;
 }
 
-function colorKey(hex: string): [number, number, number] {
-  const { h, s, l } = hexToHsl(hex);
-  const grey = s < 0.12;
-  return [grey ? 1 : 0, grey ? l : h, l];
+// The grouped palette flattened to a single ordering — what the wheel cycles
+// through, matching the on-screen order group by group.
+function paletteOrder(): string[] {
+  return groupedPalette().flatMap((g) => g.hexes);
 }
 
 function hexToHsl(hex: string): { h: number; s: number; l: number } {
@@ -156,31 +169,47 @@ function hexToHsl(hex: string): { h: number; s: number; l: number } {
   return { h: h / 6, s, l };
 }
 
-function refreshRecentActive(): void {
-  if (!recentEl) return;
+function refreshActive(): void {
+  if (!paletteEl) return;
   const cur = rgbaToHex(currentColor);
-  for (const child of Array.from(recentEl.children)) {
-    (child as HTMLElement).dataset.active = String((child as HTMLElement).title === cur);
+  for (const sw of Array.from(paletteEl.querySelectorAll<HTMLElement>(".pe-palette-swatch"))) {
+    sw.dataset.active = String(sw.title === cur);
   }
 }
 
+// Painting a fresh color folds it into the palette (deduped). No cap — an
+// explicitly built or loaded palette shouldn't silently shed colors.
 function rememberColor(hex: string): void {
-  recentColors = [hex, ...recentColors.filter((c) => c !== hex)].slice(0, RECENT_MAX);
-  renderRecent();
+  if (palette.includes(hex)) { refreshActive(); return; }
+  palette = [...palette, hex];
+  renderPalette();
   persist();
 }
 
-function renderRecent(): void {
-  recentEl.replaceChildren();
-  for (const hex of sortedPalette()) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "pe-recent-swatch";
-    b.style.background = hex;
-    b.title = hex;
-    b.dataset.active = String(hex === rgbaToHex(currentColor));
-    b.addEventListener("click", () => setColor(hexToRgba(hex) ?? currentColor));
-    recentEl.appendChild(b);
+function renderPalette(): void {
+  if (!paletteEl) return;
+  paletteEl.replaceChildren();
+  const cur = rgbaToHex(currentColor);
+  for (const { fam, hexes } of groupedPalette()) {
+    const group = document.createElement("div");
+    group.className = "pe-color-group";
+    const heading = document.createElement("h4");
+    heading.className = "pe-color-group-h";
+    heading.textContent = fam;
+    const grid = document.createElement("div");
+    grid.className = "pe-color-group-grid";
+    for (const hex of hexes) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pe-palette-swatch";
+      b.style.background = hex;
+      b.title = hex;
+      b.dataset.active = String(hex === cur);
+      b.addEventListener("click", () => setColor(hexToRgba(hex) ?? currentColor));
+      grid.appendChild(b);
+    }
+    group.append(heading, grid);
+    paletteEl.appendChild(group);
   }
 }
 
@@ -324,10 +353,11 @@ async function openPalette(): Promise<void> {
     if (!hexes.includes(norm)) hexes.push(norm);
   }
   if (hexes.length === 0) return;
-  recentColors = hexes.slice(0, RECENT_MAX);
-  renderRecent();
+  // Replace the palette with the whole file — every color, not a capped slice.
+  palette = hexes;
+  renderPalette();
   persist();
-  const first = hexToRgba(recentColors[0]);
+  const first = hexToRgba(palette[0]);
   if (first) setColor(first);
 }
 
@@ -540,7 +570,7 @@ function initChrome(version: string): void {
   // fast access without reaching for the rail. (The grid fits the window, so
   // there's no scroll to hijack.)
   editor.canvas.addEventListener("wheel", (e) => {
-    if (recentColors.length < 2) return;
+    if (palette.length < 2) return;
     e.preventDefault();
     cycleColor(e.deltaY > 0 ? 1 : -1);
   }, { passive: false });
@@ -588,10 +618,10 @@ function buildRail(aux: HTMLElement): void {
   hexLabel.className = "pe-hex mono";
   swatchRow.append(swatchEl, colorInput, hexLabel);
 
-  recentEl = document.createElement("div");
-  recentEl.className = "pe-recent";
+  paletteEl = document.createElement("div");
+  paletteEl.className = "pe-palette";
 
-  colorSection.append(swatchRow, recentEl);
+  colorSection.append(swatchRow, paletteEl);
 
   rail.append(toolsSection, colorSection);
 }
@@ -725,7 +755,8 @@ async function installFileDrop(): Promise<void> {
 // ---- persistence -----------------------------------------------------
 
 function persist(): void {
-  persisted.recent_colors = recentColors;
+  persisted.palette = palette;
+  delete persisted.recent_colors; // migrated to `palette`
   try {
     void invoke("save_state", { state: persisted }).catch(() => {});
   } catch {
@@ -759,7 +790,8 @@ async function boot(): Promise<void> {
     const st = await invoke<AppState | null>("load_state");
     if (st) {
       persisted = st;
-      if (Array.isArray(st.recent_colors)) recentColors = st.recent_colors;
+      if (Array.isArray(st.palette)) palette = st.palette;
+      else if (Array.isArray(st.recent_colors)) palette = st.recent_colors; // legacy
     }
   } catch {
     /* first run */
@@ -767,7 +799,7 @@ async function boot(): Promise<void> {
 
   setTool("paint");
   setColor(currentColor);
-  renderRecent();
+  renderPalette();
 
   // Boot into a ready default grid — this is a creation tool; an empty state
   // would just be a New click in the way.

@@ -240,12 +240,31 @@ kbd {
   text-transform: lowercase;
 }
 
-.pe-recent {
+.pe-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pe-color-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pe-color-group-h {
+  margin: 0;
+  font-family: var(--fm-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fm-muted);
+}
+.pe-color-group-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.pe-recent-swatch {
+.pe-palette-swatch {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
@@ -255,10 +274,10 @@ kbd {
   cursor: pointer;
   transition: transform 80ms ease;
 }
-.pe-recent-swatch:hover {
+.pe-palette-swatch:hover {
   transform: translateY(-1px);
 }
-.pe-recent-swatch[data-active="true"] {
+.pe-palette-swatch[data-active="true"] {
   box-shadow: 0 0 0 2px var(--fm-bg), 0 0 0 4px var(--fm-accent);
 }
 
